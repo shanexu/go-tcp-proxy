@@ -54,7 +54,7 @@ type setNoDelayer interface {
 }
 
 // Start - open connection to remote and start proxying data.
-func (p *Proxy) Start() {
+func (p *Proxy) Start(head []byte) {
 	defer p.lconn.Close()
 
 	var err error
@@ -68,6 +68,7 @@ func (p *Proxy) Start() {
 		p.Log.Warn("Remote connection failed: %s", err)
 		return
 	}
+	p.rconn.Write(head)
 	defer p.rconn.Close()
 
 	//nagles?

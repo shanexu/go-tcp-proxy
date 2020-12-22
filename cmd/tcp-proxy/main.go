@@ -18,7 +18,7 @@ var (
 	logger  proxy.ColorLogger
 
 	localAddr   = flag.String("l", ":9999", "local address")
-	remoteAddr  = flag.String("r", "localhost:80", "remote address")
+	remoteAddr  = flag.String("r", "localhost:80,SSH localhost:22", "remote address")
 	verbose     = flag.Bool("v", false, "display server actions")
 	veryverbose = flag.Bool("vv", false, "display server actions and all tcp data")
 	nagles      = flag.Bool("n", false, "disable nagles algorithm")
@@ -44,7 +44,17 @@ func main() {
 		logger.Warn("Failed to resolve local address: %s", err)
 		os.Exit(1)
 	}
-	raddr, err := net.ResolveTCPAddr("tcp", *remoteAddr)
+	r, m := parseRemoteAddr(*remoteAddr)
+	raddr, err := net.ResolveTCPAddr("tcp", r)
+	raddrm := make(map[string]*net.TCPAddr)
+	for k, r := range m {
+		raddr, err := net.ResolveTCPAddr("tcp", r)
+		if err != nil {
+			logger.Warn("Failed to resolve local address: %s", err)
+			os.Exit(1)
+		}
+		raddrm[k] = raddr
+	}
 	if err != nil {
 		logger.Warn("Failed to resolve remote address: %s", err)
 		os.Exit(1)
@@ -68,14 +78,26 @@ func main() {
 			logger.Warn("Failed to accept connection '%s'", err)
 			continue
 		}
+
+		head := make([]byte, 3, 3)
+		if _, err := conn.Read(head); err != nil {
+			logger.Warn("Failed to read 3 bytes '%s'", err)
+			continue
+		}
+
 		connid++
+
+		k := raddr
+		if j, ok := raddrm[string(head)]; ok {
+			k = j
+		}
 
 		var p *proxy.Proxy
 		if *unwrapTLS {
 			logger.Info("Unwrapping TLS")
-			p = proxy.NewTLSUnwrapped(conn, laddr, raddr, *remoteAddr)
+			p = proxy.NewTLSUnwrapped(conn, laddr, k, *remoteAddr)
 		} else {
-			p = proxy.New(conn, laddr, raddr)
+			p = proxy.New(conn, laddr, k)
 		}
 
 		p.Matcher = matcher
@@ -90,7 +112,7 @@ func main() {
 			Color:       *colors,
 		}
 
-		go p.Start()
+		go p.Start(head)
 	}
 }
 
@@ -137,4 +159,22 @@ func createReplacer(replace string) func([]byte) []byte {
 	return func(input []byte) []byte {
 		return re.ReplaceAll(input, repl)
 	}
+}
+
+var reg = regexp.MustCompile("^([^ ]{3}) ([^ ]+)$")
+
+func parseRemoteAddr(remoteAddr string) (string, map[string]string) {
+	addrs := strings.Split(remoteAddr, ",")
+	head := addrs[0]
+	addrs = addrs[1:]
+	m := make(map[string]string)
+	for _, addr := range addrs {
+		matches := reg.FindStringSubmatch(addr)
+		if len(matches) != 3 {
+			logger.Warn("remote not match regexp '%s'", addr)
+			continue
+		}
+		m[matches[1]] = matches[2]
+	}
+	return head, m
 }
